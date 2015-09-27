@@ -384,3 +384,8 @@
 #define TARGET_NR_process_vm_writev            (377)
 #define TARGET_NR_kcmp                         (378)
 #define TARGET_NR_finit_module                 (379)
+
+/* Make sure that this number is unique, A change in this number will break all CUDA benchmarks*/
+#define TARGET_NR_cudacall		397
+#define TARGET_NR_esesccall		398
+

@@ -115,6 +115,11 @@ int __clone2(int (*fn)(void *), void *child_stack_base,
 
 #include "qemu.h"
 
+#ifdef CONFIG_ESESC_user
+#include "esesc/esesc_qemu.h"
+static struct timespec start_time={0,0};
+#endif
+
 #define CLONE_NPTL_FLAGS2 (CLONE_SETTLS | \
     CLONE_PARENT_SETTID | CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID)
 
@@ -232,8 +237,10 @@ _syscall3(int,sys_tgkill,int,tgid,int,pid,int,sig)
 #if defined(TARGET_NR_tkill) && defined(__NR_tkill)
 _syscall2(int,sys_tkill,int,tid,int,sig)
 #endif
+#ifndef CONFIG_ESESC_user
 #ifdef __NR_exit_group
 _syscall1(int,exit_group,int,error_code)
+#endif
 #endif
 #if defined(TARGET_NR_set_tid_address) && defined(__NR_set_tid_address)
 _syscall1(int,set_tid_address,int *,tidptr)
@@ -934,8 +941,35 @@ static inline abi_long copy_to_user_timeval(abi_ulong target_tv_addr,
     if (!lock_user_struct(VERIFY_WRITE, target_tv, target_tv_addr, 0))
         return -TARGET_EFAULT;
 
+#ifdef CONFIG_ESESC_user
+    {
+        static struct timespec start_time={0,0};
+        struct timespec curr_time;
+
+        if (start_time.tv_sec == 0) {
+            int ret = clock_gettime(0,&start_time);
+            if (ret < 0) {
+                fprintf(stderr,"ERROR: problem getting the time\n");
+            }
+        }
+        curr_time = start_time;
+        uint64_t nsticks = QEMUReader_get_time();
+
+        curr_time.tv_nsec += nsticks;
+        while (curr_time.tv_nsec > 1e9) {
+            curr_time.tv_sec++;
+            curr_time.tv_nsec -= 1e9;
+        }
+
+        //fprintf(stderr,"QEMU Time: sec %ld, nsec %ld, ntics %llu\n",curr_time.tv_sec, curr_time.tv_nsec, (unsigned long long )nsticks);
+
+        __put_user(curr_time.tv_sec, &target_tv->tv_sec);
+        __put_user(curr_time.tv_nsec/1e3, &target_tv->tv_usec);
+    }
+#else
     __put_user(tv->tv_sec, &target_tv->tv_sec);
     __put_user(tv->tv_usec, &target_tv->tv_usec);
+#endif
 
     unlock_user_struct(target_tv, target_tv_addr, 1);
 
@@ -4491,7 +4525,12 @@ abi_long do_arch_prctl(CPUX86State *env, int code, abi_ulong addr)
 
 #endif /* defined(TARGET_I386) */
 
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+// ESESC needs a bigger stack 32* min size
+#define NEW_STACK_SIZE 32*PTHREAD_STACK_MIN
+#else
 #define NEW_STACK_SIZE 0x40000
+#endif
 
 
 static pthread_mutex_t clone_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -4532,8 +4571,35 @@ static void *clone_func(void *arg)
     pthread_mutex_unlock(&info->mutex);
     /* Wait until the parent has finshed initializing the tls state.  */
     pthread_mutex_lock(&clone_lock);
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+#ifdef CONFIG_SCQEMU
+    static uint32_t fid = 0;
+#endif
+    env->fid = QEMUReader_resumeThread(cpu->host_tid, UINT32_MAX);
+		//translate_init_esescqueue(env->fid);
+#ifdef CONFIG_SCQEMU
+		last_fid = env->fid;
+#endif
+		//envi = (void *) env;
+    /* fprintf(stderr,"qemu:clone_func tid=%d fid=%d cpu_index=%d\n",info->tid,env->fid, env->cpu_index); */
+#endif
+
     pthread_mutex_unlock(&clone_lock);
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+#ifndef CONFIG_SCQEMU
     cpu_loop(env);
+#else
+    //TODO: update state (fid register, etc)
+    env->fid = ++fid;
+    fprintf(stderr,"qemu:clone_func tid=%d fid=%d cpu_index=%d\n",info->tid,env->fid, env->cpu_index); 
+    syscall_mem[20*env->fid + 19] =  syscall_mem[20*0 + 19]; //tls2
+    thread_done[env->fid] = false;
+    scfork((env->fid), (void *)(&syscall_mem[20*env->fid]), 0 /*ARM*/, env);
+
+#endif
+#else
+    cpu_loop(env);
+#endif
     /* never exits */
     return NULL;
 }
@@ -5044,8 +5110,29 @@ static inline abi_long host_to_target_timespec(abi_ulong target_addr,
 
     if (!lock_user_struct(VERIFY_WRITE, target_ts, target_addr, 0))
         return -TARGET_EFAULT;
+#ifdef CONFIG_ESESC_user
+    {
+      struct timespec curr_time;
+
+      if (start_time.tv_sec == 0) {
+          start_time = *host_ts;
+      }
+      curr_time = start_time;
+      uint64_t nsticks = QEMUReader_get_time();
+
+      curr_time.tv_nsec += nsticks;
+      while (curr_time.tv_nsec > 1e9) {
+          curr_time.tv_sec++;
+          curr_time.tv_nsec -= 1e9;
+      }
+
+      target_ts->tv_sec = tswapl(curr_time.tv_sec);
+      target_ts->tv_nsec = tswapl(curr_time.tv_nsec);
+    }
+#else
     target_ts->tv_sec = tswapal(host_ts->tv_sec);
     target_ts->tv_nsec = tswapal(host_ts->tv_nsec);
+#endif
     unlock_user_struct(target_ts, target_addr, 1);
     return 0;
 }
@@ -5200,8 +5287,13 @@ static inline abi_long host_to_target_stat64(void *cpu_env,
    futexes locally would make futexes shared between multiple processes
    tricky.  However they're probably useless because guest atomic
    operations won't work either.  */
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+static int do_futex(target_ulong uaddr, int op, int val, target_ulong timeout,
+                    target_ulong uaddr2, int val3, void *cpu_env)
+#else
 static int do_futex(target_ulong uaddr, int op, int val, target_ulong timeout,
                     target_ulong uaddr2, int val3)
+#endif
 {
     struct timespec ts, *pts;
     int base_op;
@@ -5222,8 +5314,17 @@ static int do_futex(target_ulong uaddr, int op, int val, target_ulong timeout,
         } else {
             pts = NULL;
         }
-        return get_errno(sys_futex(g2h(uaddr), op, tswap32(val),
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+        QEMUReader_pauseThread(((CPUArchState *)cpu_env)->fid);
+#endif
+
+        int res = get_errno(sys_futex(g2h(uaddr), op, tswap32(val),
                          pts, NULL, val3));
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+        //uint32_t fid = QEMUReader_getFid(((CPUArchState *)cpu_env)->fid);
+        ((CPUArchState *)cpu_env)->fid = QEMUReader_resumeThread(((CPUState *)cpu_env)->host_tid, ((CPUArchState *)cpu_env)->fid);
+#endif
+        return res;
     case FUTEX_WAKE:
         return get_errno(sys_futex(g2h(uaddr), op, val, NULL, NULL, 0));
     case FUTEX_FD:
@@ -5602,6 +5703,16 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
             TaskState *ts;
 
             cpu_list_lock();
+#ifdef CONFIG_ESESC_user
+            //CPUArchState* acpu = ENV_GET_ARCHCPU(cpu_env);
+            int fid = ((CPUArchState *)cpu_env)->fid;
+            printf("QEMU %d pid finished (3)\n",fid);
+#ifndef CONFIG_SCQEMU
+            QEMUReader_finish_thread(fid);
+#else
+            thread_done[fid] = true;
+#endif 
+#endif
             /* Remove the CPU from the list.  */
             QTAILQ_REMOVE(&cpus, cpu, node);
             cpu_list_unlock();
@@ -5614,13 +5725,24 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
             thread_cpu = NULL;
             object_unref(OBJECT(cpu));
             g_free(ts);
+#ifndef CONFIG_SCQEMU
             pthread_exit(NULL);
+#endif
         }
 #ifdef TARGET_GPROF
         _mcleanup();
 #endif
+#ifdef CONFIG_ESESC_user
+        printf("QEMU %d pid finished (2)\n",((CPUArchState *)cpu_env)->fid);
+#ifndef CONFIG_SCQEMU
+        QEMUReader_finish(((CPUArchState *)cpu_env)->fid); 
+#else
+	thread_done[(((CPUArchState *)cpu_env)->fid)] = true;
+#endif 
+#else
         gdb_exit(cpu_env, arg1);
         _exit(arg1);
+#endif
         ret = 0; /* avoid warning */
         break;
     case TARGET_NR_read:
@@ -7480,8 +7602,20 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 #ifdef TARGET_GPROF
         _mcleanup();
 #endif
+#ifdef CONFIG_ESESC_user
+        ret = 0;
+#ifndef CONFIG_SCQEMU
+        printf("QEMU %d pid finished (4)\n",((CPUArchState *)cpu_env)->fid);
+        QEMUReader_finish(((CPUArchState *)cpu_env)->fid); 
+        pthread_exit(NULL);
+#else
+	thread_done[(((CPUArchState *)cpu_env)->fid)] = true;
+        printf("qemu %d pid finished (4)\n",((CPUArchState *)cpu_env)->fid);
+#endif 
+#else
         gdb_exit(cpu_env, arg1);
         ret = get_errno(exit_group(arg1));
+#endif
         break;
 #endif
     case TARGET_NR_setdomainname:
@@ -9291,7 +9425,11 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 	break;
 #endif
     case TARGET_NR_futex:
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+        ret = do_futex(arg1, arg2, arg3, arg4, arg5, arg6, cpu_env);
+#else
         ret = do_futex(arg1, arg2, arg3, arg4, arg5, arg6);
+#endif
         break;
 #if defined(TARGET_NR_inotify_init) && defined(__NR_inotify_init)
     case TARGET_NR_inotify_init:
@@ -9481,6 +9619,36 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 #endif
         break;
 #endif
+#if defined(CONFIG_ESESC_CUDA)
+    struct Arguments *p1;
+    uint32_t cuda_fn_code = 0;
+    case TARGET_NR_cudacall:
+
+        cuda_fn_code = ((uint32_t)arg1);
+        if (!lock_user_struct(VERIFY_READ, p1, arg2, 1)) { //CHECK THIS
+            printf("Some error... \n");
+            return -TARGET_EFAULT;
+        }
+        cuda_fn_code = arg1;
+        ret = callRealCudaFunctions(p1, cuda_fn_code, cpu_env, ((CPUArchState *)cpu_env)->fid); //FIXME : return the suitable error number
+
+#if 0
+#if defined(TARGET_SPARC) //CUDA DOES NOT WORK WITH SPARC YET, so if 0
+          ((CPUSPARCState*)cpu_env)->le_memory_start_addr = mallocle_abs_start;
+          ((CPUSPARCState*)cpu_env)->le_memory_size = mallocle_max_size;
+#endif
+#endif
+
+        unlock_user_struct(p1, arg2, 1);
+        break;
+#endif
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+    case TARGET_NR_esesccall:
+        // for now, only inform the esesc that the app finished, and from now on do not gather stats
+        ret = QEMUReader_setnoStats(((CPUArchState *)cpu_env)->fid);
+        break;
+#endif
+
 #if defined(CONFIG_SYNC_FILE_RANGE)
 #if defined(TARGET_NR_sync_file_range)
     case TARGET_NR_sync_file_range:

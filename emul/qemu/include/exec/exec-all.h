@@ -280,6 +280,9 @@ static inline void tb_set_jmp_target(TranslationBlock *tb,
 static inline void tb_add_jump(TranslationBlock *tb, int n,
                                TranslationBlock *tb_next)
 {
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+    return;
+#endif  
     /* NOTE: this test is only needed for thread safety */
     if (!tb->jmp_next[n]) {
         /* patch the native jump address */

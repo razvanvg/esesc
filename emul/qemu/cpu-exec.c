@@ -24,6 +24,7 @@
 #include "qemu/atomic.h"
 #include "sysemu/qtest.h"
 #include "qemu/timer.h"
+#include "exec/cpu_ldst.h" 
 #include "exec/address-spaces.h"
 #include "exec/memory-internal.h"
 #include "qemu/rcu.h"
@@ -36,6 +37,39 @@ typedef struct SyncClocks {
     int64_t last_cpu_icount;
     int64_t realtime_clock;
 } SyncClocks;
+
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+#include "esesc/esesc_qemu.h"
+
+static int pending_flush=0;
+int esesc_allow_large_tb[128] = {[0 ... 127] = 1};
+int esesc_single_inst_tb[128] = {[0 ... 127] = 0};
+
+void esesc_set_rabbit(uint32_t fid)
+{
+  if (esesc_allow_large_tb[fid] == 1 && esesc_single_inst_tb[fid] == 0)
+    return;
+  esesc_allow_large_tb[fid] = 1;
+  esesc_single_inst_tb[fid] = 0;
+  //pending_flush = 1;
+}
+void esesc_set_warmup(uint32_t fid)
+{
+  if (esesc_allow_large_tb[fid] == 0 && esesc_single_inst_tb[fid] == 0)
+    return;
+  esesc_allow_large_tb[fid] = 0;
+  esesc_single_inst_tb[fid] = 0;
+  //pending_flush = 1;
+}
+void esesc_set_timing(uint32_t fid)
+{
+  if (esesc_allow_large_tb[fid] == 0 && esesc_single_inst_tb[fid] == 1)
+    return;
+  esesc_allow_large_tb[fid] = 0;
+  esesc_single_inst_tb[fid] = 1;
+  //pending_flush = 1;
+}
+#endif
 
 #if !defined(CONFIG_USER_ONLY)
 /* Allow the guest to have a max 3ms advance.
@@ -383,6 +417,10 @@ int cpu_exec(CPUState *cpu)
 
     rcu_read_lock();
 
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+    ((CPUArchState *)cpu)->op_cnt   =0;
+#endif
+
     if (unlikely(exit_request)) {
         cpu->exit_request = 1;
     }
@@ -480,6 +518,12 @@ int cpu_exec(CPUState *cpu)
                     cpu_loop_exit(cpu);
                 }
                 spin_lock(&tcg_ctx.tb_ctx.tb_lock);
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+                if (pending_flush) {
+                    tb_flush(cpu);
+                    pending_flush = 0;
+                }
+#endif  
                 have_tb_lock = true;
                 tb = tb_find_fast(cpu);
                 /* Note: we do it here to avoid a gcc bug on Mac OS X when
@@ -516,6 +560,34 @@ int cpu_exec(CPUState *cpu)
                     tc_ptr = tb->tc_ptr;
                     /* execute the generated code */
                     next_tb = cpu_tb_exec(cpu, tc_ptr);
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+                    if (cpu) {
+                        int i;
+                        CPUArchState* env=(CPUArchState *)cpu;
+                        //for(i=0;i<env->op_cnt;i++) 
+                        //  printf("%d pc:0x%x, insn:0x%x\n",i, env->op_pc[i], env->op_insn[i]);
+
+                        if (esesc_allow_large_tb[env->fid]) { // RABBIT
+                            uint32_t ninst = env->op_cnt;
+                            if (ninst == 0)
+                                ninst = tb->icount;
+                            QEMUReader_queue_inst(0xdeaddead, env->op_pc[ninst-1], 0, env->fid, env->op_insn[ninst-1], ninst, (void *) env);
+                            //printf("%d op:%x:%x:%x %x:%x\n",0, env->op_pc[ninst-1], cpu_ldl_code(env, env->op_pc[ninst-1]), env->op_insn[ninst-1],env->op_addr[ninst-1],env->op_data[ninst-1]);
+                        } else if (esesc_allow_large_tb[env->fid]==0 && esesc_single_inst_tb[env->fid] == 0) { // WARMUP
+                            for (i=0; i<env->op_cnt; i++) {
+                               QEMUReader_queue_inst(0xdeadbeaf, env->op_pc[i], env->op_addr[i], env->fid, env->op_insn[i], 1, (void *) env);
+                            }
+                        } else {
+                            // FIXME: what if env->op_cnt == 0
+                            for (i=0; i<env->op_cnt; i++) {
+                                // the msb of op_inst indicates thumb mode for ARM
+                                QEMUReader_queue_inst(cpu_ldl_code(env, env->op_pc[i]), env->op_pc[i], env->op_addr[i], env->fid, env->op_insn[i], 1, (void *) env);
+                                //printf("%d %d op:%x:%x:%x %x:%x\n", env->fid, i, env->op_pc[i], cpu_ldl_code(env, env->op_pc[i]), env->op_insn[i],env->op_addr[i],env->op_data[i]);
+                            }
+                        }
+                        env->op_cnt   =0;
+                    }
+#endif
                     switch (next_tb & TB_EXIT_MASK) {
                     case TB_EXIT_REQUESTED:
                         /* Something asked us to stop executing
@@ -543,6 +615,34 @@ int cpu_exec(CPUState *cpu)
                                 tb = (TranslationBlock *)(next_tb & ~TB_EXIT_MASK);
                                 cpu_exec_nocache(cpu, insns_left, tb);
                                 align_clocks(&sc, cpu);
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+                                if (cpu) {
+                                    int i;
+                                    CPUArchState* env=(CPUArchState *)cpu;
+                                    //for(i=0;i<env->op_cnt;i++) 
+                                    //  printf("%d pc:0x%x, insn:0x%x\n",i, env->op_pc[i], env->op_insn[i]);
+
+                                    if (esesc_allow_large_tb[env->fid]) { // RABBIT
+                                        uint32_t ninst = env->op_cnt;
+                                        if (ninst == 0)
+                                            ninst = tb->icount;
+                                        QEMUReader_queue_inst(0xdeaddead, env->op_pc[ninst-1], 0, env->fid, 0, ninst, (void *) env);
+                                    } else if (esesc_allow_large_tb[env->fid]==0 && esesc_single_inst_tb[env->fid] == 0) { // WARMUP
+                                        for (i=0; i<env->op_cnt; i++) {
+                                            QEMUReader_queue_inst(cpu_ldl_code(env, env->op_pc[i]), env->op_pc[i], env->op_addr[i], env->fid, env->op_insn[i], 1, (void *) env);
+                                        }
+                                    } else {
+                                        // FIXME: what if env->op_cnt == 0
+                                        for (i=0; i<env->op_cnt; i++) {
+                                            // the msb of op_inst indicates thumb mode for ARM
+                                            QEMUReader_queue_inst(cpu_ldl_code(env, env->op_pc[i]), env->op_pc[i], env->op_addr[i], env->fid, env->op_insn[i], 1, (void *) env);
+                                            //printf("%d op:%x:%x:%x %x:%x\n",i, env->op_pc[i], cpu_ldl_code(env, env->op_pc[i]), env->op_insn[i],env->op_addr[i],env->op_data[i]);
+                                        }
+                                    }
+                                    env->op_cnt   =0;
+                                }
+
+#endif
                             }
                             cpu->exception_index = EXCP_INTERRUPT;
                             next_tb = 0;

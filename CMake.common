@@ -168,25 +168,12 @@ IF(NOT ENABLE_NOEMU)
         SET(ENABLE_I386 1)
         # 32bit CUDA when the emulated architecture is a 32bit ISA
         SET(ESESC_QEMU_ISA_ARM_32bit 1)
-        SET(CMAKE_QEMU_LIBS -g -m32 -march=i686
-          -Wl,-T,${qemu_BUILD}/config-host.ld
-          -Wl,-T,${qemu_SOURCE}/i386.ld
+        SET(CMAKE_QEMU_LIBS -g -m32 -march=i686 ${qemu_BUILD}/libqemuutil.a ${qemu_BUILD}/libqemustub.a
           ${qemu_BUILD}/arm-linux-user/libqemu_esesc.a /lib32/libdl.so.2 /lib32/libpcre.so.3 -Wl,-rpath,/usr/lib32 )
       ELSE(CMAKE_HOST_ARCH MATCHES "i386")
         # this could be ARM or X86 or native 32bit for 32bit Linux distros. CUDA emulation does not work with 64bit
         SET(ESESC_QEMU_ISA_ARM_64bit 1)
-        IF(CMAKE_HOST_ARCH MATCHES "armel") 
-          SET(CMAKE_QEMU_LIBS 
-            -Wl,-T,${qemu_BUILD}/config-host.ld
-            -Wl,-T,${qemu_SOURCE}/arm.ld
-            ${qemu_BUILD}/arm-linux-user/libqemu_esesc.a)
-        ELSE(CMAKE_HOST_ARCH MATCHES "armel") 
-          #SET(CMAKE_QEMU_LIBS -Wl,--whole-archive ${qemu_BUILD}/arm-linux-user/libqemu_esesc.a -Wl,--no-whole-archive)
-          SET(CMAKE_QEMU_LIBS 
-            #-Wl,-T,${qemu_BUILD}/config-host.ld
-            #-Wl,-T,${qemu_SOURCE}/x86_64.ld
-            ${qemu_BUILD}/arm-linux-user/libqemu_esesc.a ${qemu_BUILD}/libqemuutil.a ${qemu_BUILD}/libqemustub.a)
-        ENDIF(CMAKE_HOST_ARCH MATCHES "armel") 
+        SET(CMAKE_QEMU_LIBS ${qemu_BUILD}/arm-linux-user/libqemu_esesc.a ${qemu_BUILD}/libqemuutil.a ${qemu_BUILD}/libqemustub.a)
       ENDIF(CMAKE_HOST_ARCH MATCHES "i386")
 
     ENDIF(ENABLE_QEMU_SYSTEM)

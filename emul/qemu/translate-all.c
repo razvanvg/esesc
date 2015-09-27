@@ -774,6 +774,9 @@ static void page_flush_tb(void)
 /* XXX: tb_flush is currently not thread safe */
 void tb_flush(CPUState *cpu)
 {
+#if defined(CONFIG_USER_ONLY)
+    cpu_list_lock();
+#endif    
 #if defined(DEBUG_FLUSH)
     printf("qemu: flush code_size=%ld nb_tbs=%d avg_tb_size=%ld\n",
            (unsigned long)(tcg_ctx.code_gen_ptr - tcg_ctx.code_gen_buffer),
@@ -798,6 +801,9 @@ void tb_flush(CPUState *cpu)
     /* XXX: flush processor icache at this point if cache flush is
        expensive */
     tcg_ctx.tb_ctx.tb_flush_count++;
+#if defined(CONFIG_USER_ONLY)
+    cpu_list_unlock();
+#endif    
 }
 
 #ifdef DEBUG_TB_CHECK
@@ -845,6 +851,9 @@ static inline void tb_hash_remove(TranslationBlock **ptb, TranslationBlock *tb)
 {
     TranslationBlock *tb1;
 
+#if defined(CONFIG_USER_ONLY)
+    cpu_list_lock();
+#endif
     for (;;) {
         tb1 = *ptb;
         if (tb1 == tb) {
@@ -853,6 +862,9 @@ static inline void tb_hash_remove(TranslationBlock **ptb, TranslationBlock *tb)
         }
         ptb = &tb1->phys_hash_next;
     }
+#if defined(CONFIG_USER_ONLY)
+    cpu_list_unlock();
+#endif
 }
 
 static inline void tb_page_remove(TranslationBlock **ptb, TranslationBlock *tb)
@@ -860,6 +872,9 @@ static inline void tb_page_remove(TranslationBlock **ptb, TranslationBlock *tb)
     TranslationBlock *tb1;
     unsigned int n1;
 
+#if defined(CONFIG_USER_ONLY)
+    cpu_list_lock();
+#endif
     for (;;) {
         tb1 = *ptb;
         n1 = (uintptr_t)tb1 & 3;
@@ -870,6 +885,9 @@ static inline void tb_page_remove(TranslationBlock **ptb, TranslationBlock *tb)
         }
         ptb = &tb1->page_next[n1];
     }
+#if defined(CONFIG_USER_ONLY)
+    cpu_list_unlock();
+#endif
 }
 
 static inline void tb_jmp_remove(TranslationBlock *tb, int n)
@@ -877,6 +895,9 @@ static inline void tb_jmp_remove(TranslationBlock *tb, int n)
     TranslationBlock *tb1, **ptb;
     unsigned int n1;
 
+#if defined(CONFIG_USER_ONLY)
+    cpu_list_lock();
+#endif
     ptb = &tb->jmp_next[n];
     tb1 = *ptb;
     if (tb1) {
@@ -899,6 +920,9 @@ static inline void tb_jmp_remove(TranslationBlock *tb, int n)
 
         tb->jmp_next[n] = NULL;
     }
+#if defined(CONFIG_USER_ONLY)
+    cpu_list_unlock();
+#endif
 }
 
 /* reset the jump entry 'n' of a TB so that it is not chained to

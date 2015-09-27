@@ -34,6 +34,26 @@
 #include "qemu/envlist.h"
 #include "elf.h"
 
+#ifdef CONFIG_ESESC_CUDA
+#include "esesc/esesc_cuda_runtime.h"
+#endif
+
+#ifdef CONFIG_ESESC_user
+int qemuesesc_main(int argc, char **argv, char **envp);
+void QEMUReader_goto_sleep(void *env);
+void QEMUReader_wakeup_from_sleep(void *env);
+
+#ifdef TARGET_ARM
+uint32_t thumb;
+#endif
+
+#undef main
+#define main qemuesesc_main
+#endif /* CONFIG_ESESC_user */
+#ifdef CONFIG_SCQEMU
+extern void scfork(uint64_t, void *, uint8_t, void *);
+#endif 
+
 char *exec_path;
 
 int singlestep;
@@ -199,6 +219,17 @@ static inline void cpu_exec_end(CPUState *cpu)
     exclusive_idle();
     pthread_mutex_unlock(&exclusive_lock);
 }
+
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+void QEMUReader_goto_sleep(void *env)
+{
+  cpu_exec_end((CPUState *)env);
+}
+void QEMUReader_wakeup_from_sleep(void *env)
+{
+  cpu_exec_start((CPUState *)env);
+}
+#endif
 
 void cpu_list_lock(void)
 {
@@ -577,6 +608,10 @@ do_kernel_trap(CPUARMState *env)
     }
     env->regs[15] = addr;
 
+#ifdef CONFIG_ESESC_user
+    thumb = env->thumb;
+#endif
+
     return 0;
 }
 
@@ -664,6 +699,23 @@ done:
     return segv;
 }
 
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+uint64_t qemuesesc_getReg(void * env, uint8_t reg){
+  return (uint64_t) (((CPUARMState *)env)->regs[reg]);
+}
+void qemuesesc_setReg(void * env, uint8_t reg, uint64_t data){
+  ((CPUARMState *)env)->regs[reg] = data;
+}
+
+void * qemuesesc_getCP15ptr(void * env){
+    return ((void *)(& (((CPUARMState *)env)->cp15)));
+}
+
+uint32_t  qemuesesc_getCP15tls2(void * env){
+    return  (( (((CPUARMState *)env)->cp15.tpidrro_el[0])));
+}
+#endif
+
 void cpu_loop(CPUARMState *env)
 {
     CPUState *cs = CPU(arm_env_get_cpu(env));
@@ -674,7 +726,30 @@ void cpu_loop(CPUARMState *env)
 
     for(;;) {
         cpu_exec_start(cs);
+
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+        if (use_icount) {
+            int64_t count;
+            int decr;
+            cs->icount_decr.u16.low = 0;
+            cs->icount_extra = 0;
+            count = 2048;
+            decr = (count > 0xffff) ? 0xffff : count;
+            count -= decr;
+            cs->icount_decr.u16.low = decr;
+            cs->icount_extra = count;
+        }
+#endif
+
         trapnr = cpu_arm_exec(cs);
+
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+        if (use_icount) {
+            cs->icount_decr.u32 = 0;
+            cs->icount_extra = 0;
+        }
+        thumb= env->thumb;
+#endif
         cpu_exec_end(cs);
         switch(trapnr) {
         case EXCP_UDEF:
@@ -3447,26 +3522,37 @@ CPUArchState *cpu_copy(CPUArchState *env)
     CPUState *cpu = ENV_GET_CPU(env);
     CPUState *new_cpu = cpu_init(cpu_model);
     CPUArchState *new_env = new_cpu->env_ptr;
+#if !defined(CONFIG_SCQEMU)
     CPUBreakpoint *bp;
     CPUWatchpoint *wp;
+#endif
 
     /* Reset non arch specific state */
     cpu_reset(new_cpu);
 
     memcpy(new_env, env, sizeof(CPUArchState));
 
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+    new_env->op_cnt  = 0;
+    new_env->op_pc   = new_env->op_pc_raw;
+    new_env->op_insn = new_env->op_insn_raw;
+    new_env->op_addr = new_env->op_addr_raw;
+#endif    
+
     /* Clone all break/watchpoints.
        Note: Once we support ptrace with hw-debug register access, make sure
        BP_CPU break/watchpoints are handled correctly on clone. */
     QTAILQ_INIT(&new_cpu->breakpoints);
     QTAILQ_INIT(&new_cpu->watchpoints);
+#if !defined(CONFIG_SCQEMU)
     QTAILQ_FOREACH(bp, &cpu->breakpoints, entry) {
         cpu_breakpoint_insert(new_cpu, bp->pc, bp->flags, NULL);
     }
     QTAILQ_FOREACH(wp, &cpu->watchpoints, entry) {
         cpu_watchpoint_insert(new_cpu, wp->vaddr, wp->len, wp->flags, NULL);
     }
-
+#endif
+    
     return new_env;
 }
 
@@ -3829,6 +3915,12 @@ static int parse_args(int argc, char **argv)
 
     return optind;
 }
+
+#ifdef CONFIG_SCQEMU
+#define MAX_NTHREADS 128 
+uint64_t syscall_mem[20*MAX_NTHREADS];
+bool thread_done[MAX_NTHREADS];
+#endif
 
 int main(int argc, char **argv, char **envp)
 {
@@ -4405,7 +4497,22 @@ int main(int argc, char **argv, char **envp)
         }
         gdb_handlesig(cpu, 0);
     }
+#ifndef CONFIG_SCQEMU
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+#ifdef TARGET_ARM
+    thumb = env->thumb;
+#endif
+    ((CPUARMState *)env)->fid = 0;	
+#endif
     cpu_loop(env);
+#else
+    ((CPUARMState *)env)->fid = 0;	
+    thread_done[0] = false;
+    if (env->thumb)
+      scfork(0, (void *)(&syscall_mem[20*0]), 1 /*THUMB*/, env);
+    else
+      scfork(0, (void *)(&syscall_mem[20*0]), 0 /*ARM32*/, env);
+#endif
     /* never exits */
     return 0;
 }

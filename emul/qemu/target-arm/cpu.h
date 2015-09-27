@@ -41,6 +41,12 @@
 
 #include "fpu/softfloat.h"
 
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+#ifndef CF_COUNT_MASK
+#define CF_COUNT_MASK  0x7fff
+#endif
+#endif
+
 #define EXCP_UDEF            1   /* undefined instruction */
 #define EXCP_SWI             2   /* software interrupt */
 #define EXCP_PREFETCH_ABORT  3
@@ -175,6 +181,9 @@ typedef struct CPUARMState {
     uint64_t elr_el[4]; /* AArch64 exception link regs  */
     uint64_t sp_el[4]; /* AArch64 banked stack pointers */
 
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+    uint32_t fid; /* simu flow id */
+#endif
     /* System control coprocessor (cp15) */
     struct {
         uint32_t c0_cpuid;
@@ -458,6 +467,15 @@ typedef struct CPUARMState {
     uint64_t exclusive_test;
     uint32_t exclusive_info;
 #endif
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+    uint32_t op_cnt; // number of uops executed
+    target_ulong op_pc_raw[128+CF_COUNT_MASK];
+    target_ulong op_insn_raw[128+CF_COUNT_MASK];
+    target_ulong op_addr_raw[128+CF_COUNT_MASK];
+    target_ulong *op_insn;
+    target_ulong *op_pc;
+    target_ulong *op_addr;
+#endif
 
     /* iwMMXt coprocessor state.  */
     struct {
@@ -499,6 +517,9 @@ typedef struct CPUARMState {
 #include "cpu-qom.h"
 
 ARMCPU *cpu_arm_init(const char *cpu_model);
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+void arm_translate_init_esescqueue(uint32_t fid);
+#endif
 int cpu_arm_exec(CPUState *cpu);
 uint32_t do_arm_semihosting(CPUARMState *env);
 void aarch64_sync_32_to_64(CPUARMState *env);
@@ -1502,6 +1523,8 @@ bool write_cpustate_to_list(ARMCPU *cpu);
 #  define TARGET_PHYS_ADDR_SPACE_BITS 40
 #  define TARGET_VIRT_ADDR_SPACE_BITS 32
 #endif
+
+#define translate_init_esescqueue arm_translate_init_esescqueue
 
 static inline bool arm_excp_unmasked(CPUState *cs, unsigned int excp_idx,
                                      unsigned int target_el)

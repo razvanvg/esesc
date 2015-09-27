@@ -84,6 +84,8 @@ LINK = $(call quiet-command,\
        $(call extract-libs,$(1:.lo=.o)) $(LIBS),$(if $(filter %.lo %.la,$1),"lt LINK ", "  LINK  ")"$(TARGET_DIR)$@")
 endif
 
+LINKAR = $(call quiet-command,ar -rc  $@ $(1),"  LINKAR  $(TARGET_DIR)$@")
+
 %.asm: %.S
 	$(call quiet-command,$(CPP) $(QEMU_INCLUDES) $(QEMU_CFLAGS) $(QEMU_DGFLAGS) $(CFLAGS) -o $@ $<,"  CPP   $(TARGET_DIR)$@")
 

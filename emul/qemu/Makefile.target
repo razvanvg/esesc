@@ -33,6 +33,26 @@ QEMU_PROG_BUILD = $(QEMU_PROG)
 endif
 endif
 
+ifdef CONFIG_ESESC_system
+QEMU_PROG = libqemu_esesc.a
+QEMU_CFLAGS += -I$(SRC_PATH)/../libqemuint -I$(SRC_PATH)/../libgpu #-I$(SRC_PATH)/esesc
+QEMU_PROG_BUILD = $(QEMU_PROG)
+endif
+
+ifdef CONFIG_ESESC_user
+QEMU_PROG = libqemu_esesc.a
+QEMU_CFLAGS += -I$(SRC_PATH)/../libqemuint -I$(SRC_PATH)/../libgpu #-I$(SRC_PATH)/esesc
+LIBS += -lcudart -Wl,-rpath,/usr/lib32
+QEMU_PROG_BUILD = $(QEMU_PROG)
+endif
+
+ifdef CONFIG_ESESC_CUDA
+LDFLAGS += -L/usr/local/cuda/lib -L/usr/lib32
+LIBS += -lcudart
+QEMU_CFLAGS += -I/usr/local/cuda/include -I/usr/local/cuda/include/crt
+QEMU_PROG_BUILD = $(QEMU_PROG)
+endif
+
 PROGS=$(QEMU_PROG) $(QEMU_PROGW)
 STPFILES=
 
@@ -180,8 +200,18 @@ all-obj-$(CONFIG_SOFTMMU) += $(block-obj-y)
 $(QEMU_PROG_BUILD): config-devices.mak
 
 # build either PROG or PROGW
+#=======================================================
+#DM NEW STRUCTURE, should fine better way to express an OR evaluation
 $(QEMU_PROG_BUILD): $(all-obj-y) ../libqemuutil.a ../libqemustub.a
+ifdef CONFIG_ESESC_system
+	$(call LINKAR, $(filter-out %.mak, $(all-obj-y)))
+else 
+ifdef CONFIG_ESESC_user
+	$(call LINKAR, $(filter-out %.mak, $(all-obj-y)))
+else 
 	$(call LINK, $(filter-out %.mak, $^))
+endif
+endif
 ifdef CONFIG_DARWIN
 	$(call quiet-command,Rez -append $(SRC_PATH)/pc-bios/qemu.rsrc -o $@,"  REZ   $(TARGET_DIR)$@")
 	$(call quiet-command,SetFile -a C $@,"  SETFILE $(TARGET_DIR)$@")

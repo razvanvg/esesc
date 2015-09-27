@@ -201,6 +201,13 @@ void init_qemu_uname_release(void);
 void fork_start(void);
 void fork_end(int child);
 
+#if defined (CONFIG_ESESC_system) || defined (CONFIG_ESESC_user)
+uint64_t qemuesesc_getReg(void * env, uint8_t reg);
+void qemuesesc_setReg(void * env, uint8_t reg, uint64_t data);
+void *qemuesesc_getCP15ptr(void * env);
+uint32_t  qemuesesc_getCP15tls2(void * env);
+#endif
+
 /* Creates the initial guest address space in the host memory space using
  * the given host start address hint and size.  The guest_start parameter
  * specifies the start address of the guest space.  guest_base will be the

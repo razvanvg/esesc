@@ -200,6 +200,10 @@ interp_prefix="/usr/gnemul/qemu-%M"
 static="no"
 cross_prefix=""
 audio_drv_list=""
+esesc_system="no"
+esesc_user="no"
+esesc_cuda="no"
+scqemu="no"
 block_drv_rw_whitelist=""
 block_drv_ro_whitelist=""
 host_cc="cc"
@@ -959,6 +963,14 @@ for opt do
       sdl="no" ;
       audio_drv_list="coreaudio `echo $audio_drv_list | sed s,coreaudio,,g`"
   ;;
+  --enable-esesc_system) esesc_system="yes"
+  ;;
+  --enable-esesc_user) esesc_user="yes"
+  ;;
+  --enable-esesc_cuda) esesc_cuda="yes"
+  ;;
+  --enable-scqemu) scqemu="yes"
+  ;;
   --disable-system) softmmu="no"
   ;;
   --enable-system) softmmu="yes"
@@ -1307,6 +1319,10 @@ Advanced options (experts only):
   --disable-blobs          disable installing provided firmware blobs
   --with-vss-sdk=SDK-path  enable Windows VSS support in QEMU Guest Agent
   --with-win-sdk=SDK-path  path to Windows Platform SDK (to build VSS .tlb)
+  --enable-esesc_system    compile files needed for linking to ESESC with System Mode
+  --enable-esesc_user      compile files needed for linking to ESESC with User Mode
+  --enable-esesc_cuda      compile files needed for using CUDA applications for ESESC with User Mode
+  --enable-scqemu          compile files needed for linking to scqemu with User Mode
 
 Optional features, enabled with --enable-FEATURE and
 disabled with --disable-FEATURE, default is enabled if available:
@@ -4497,6 +4513,11 @@ echo "sparse enabled    $sparse"
 echo "strip binaries    $strip_opt"
 echo "profiler          $profiler"
 echo "static build      $static"
+echo "esesc_system      $esesc_system"
+echo "esesc_user        $esesc_user"
+echo "esesc_CUDA        $esesc_cuda"
+echo "SCQEMU            $scqemu"
+echo "-Werror enabled   $werror"
 if test "$darwin" = "yes" ; then
     echo "Cocoa support     $cocoa"
 fi
@@ -4923,6 +4944,20 @@ fi
 if test "$fdatasync" = "yes" ; then
   echo "CONFIG_FDATASYNC=y" >> $config_host_mak
 fi
+
+if test "$esesc_system" = "yes" ; then
+  echo "CONFIG_ESESC_system=y" >> $config_host_mak
+fi
+if test "$esesc_user" = "yes" ; then
+  echo "CONFIG_ESESC_user=y" >> $config_host_mak
+fi
+if test "$esesc_cuda" = "yes" ; then
+  echo "CONFIG_ESESC_CUDA=y" >> $config_host_mak
+fi
+if test "$scqemu" = "yes" ; then
+  echo "CONFIG_SCQEMU=y" >> $config_host_mak
+fi
+
 if test "$madvise" = "yes" ; then
   echo "CONFIG_MADVISE=y" >> $config_host_mak
 fi
@@ -5392,6 +5427,18 @@ case "$target_name" in
     error_exit "Unsupported target CPU"
   ;;
 esac
+if test "$esesc_system" = "yes" ; then
+  echo "CONFIG_ESESC_system=y" >> $config_target_mak
+fi
+if test "$esesc_user" = "yes" ; then
+  echo "CONFIG_ESESC_user=y" >> $config_target_mak
+fi
+if test "$esesc_cuda" = "yes" ; then
+  echo "CONFIG_ESESC_CUDA=y" >> $config_target_mak
+fi
+if test "$scqemu" = "yes" ; then
+  echo "CONFIG_SCQEMU=y" >> $config_target_mak
+fi
 # TARGET_BASE_ARCH needs to be defined after TARGET_ARCH
 if [ "$TARGET_BASE_ARCH" = "" ]; then
   TARGET_BASE_ARCH=$TARGET_ARCH
